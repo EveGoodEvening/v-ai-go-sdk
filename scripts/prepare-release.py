@@ -66,9 +66,12 @@ def consumer(tag, proxy, expected_commit=None, expected_checksums=None):
         )
         downloaded = subprocess.run(
             ["go", "mod", "download", "-json", f"{MODULE}@{tag}"], cwd=root,
-            env=environment, check=True, capture_output=True, text=True,
+            env=environment, stdout=subprocess.PIPE, text=True,
         )
-        module = json.loads(downloaded.stdout)
+        module = json.loads(downloaded.stdout) if downloaded.stdout else {}
+        if module.get("Error"):
+            raise ValueError(f"module download via {proxy} failed: {module['Error']}")
+        downloaded.check_returncode()
         if module.get("Path") != MODULE or module.get("Version") != tag:
             raise ValueError("downloaded module identity does not match the requested release")
         if not module.get("Sum") or not module.get("GoModSum"):

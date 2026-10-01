@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Release verification now reports Go's JSON module-download error with the download source and retains stderr, instead of hiding the cause behind a subprocess exit status. Checksum and commit checks remain mandatory; no SDK API or runtime behavior changes.
+
 ## v0.2.1
 
 ### Release preparation

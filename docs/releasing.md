@@ -75,3 +75,12 @@ Evaluation callers retain `Evaluate` and `WithBaseURL`; generation uses explicit
 Never move, delete as a rollback, or reuse a published tag, including a failed prerelease candidate. A transient infrastructure/proxy failure can be retried with **Re-run failed jobs** on the same unchanged tag. Existing releases are not overwritten on rerun.
 
 Correct a defective version with a new patch release. Add an appropriate `retract` directive to `go.mod` naming the actual bad version/range and rationale, mark the hosted release as affected, publish corrected notes, and direct consumers to the new version. Issue a security advisory for security-impacting defects. Keep the old tag intact and never add speculative retractions.
+
+### Newly pushed tag reports `unknown revision`
+
+Check version availability through Git refs before tagging, not by requesting a not-yet-pushed version from `proxy.golang.org` or `sum.golang.org`. The [Go module services FAQ](https://proxy.golang.org/) warns that a request made before the tag exists can cache its absence for up to 30 minutes.
+
+`GOPROXY=direct` still uses `sum.golang.org` for checksum verification. A direct download can resolve the correct Git tag and then fail at the checksum lookup with HTTP 404 `unknown revision`. The release script reports Go's JSON `Error` with the download source and leaves stderr visible so this is distinguishable from Git access failures and checksum mismatches.
+
+For a confirmed negative-cache failure, keep the tag unchanged, wait for the public services to resolve that exact version, then use **Re-run failed jobs** on the existing Release run. Do not disable `GOSUMDB`, skip the public-proxy consumer, or move/reuse the tag. A checksum mismatch is not a propagation failure and must be investigated rather than bypassed. Local consumer verification does not establish hosted publication success.
+
