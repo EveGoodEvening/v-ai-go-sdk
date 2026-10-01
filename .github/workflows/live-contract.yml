@@ -1,0 +1,288 @@
+name: Live contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      x_search_probe:
+        description: Select the paid x_search options probe
+        required: true
+        type: choice
+        options:
+          - matrix
+          - interaction
+          - excluded-interaction
+        default: matrix
+  schedule:
+    - cron: '17 9 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-contract
+  cancel-in-progress: false
+
+jobs:
+  public-generation:
+    name: Authorized public generation smoke
+    runs-on: ubuntu-latest
+    environment: live-evaluation
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      AI_GATEWAY_PUBLIC_LIVE_COST_ACK: I_ACCEPT_LIVE_PUBLIC_API_COSTS
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned primary Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+          check-latest: false
+          cache: false
+
+      - name: Require isolated public-generation authorization
+        shell: bash
+        run: |
+          if [[ ! ${AI_GATEWAY_API_KEY:-} =~ [^[:space:]] ]]; then
+            echo 'AI_GATEWAY_API_KEY is not configured in the protected live-evaluation environment.' >&2
+            exit 1
+          fi
+          if [[ ${VERCEL_OIDC_TOKEN:-} =~ [^[:space:]] ]]; then
+            echo 'Exactly one credential is required; VERCEL_OIDC_TOKEN must be unset.' >&2
+            exit 1
+          fi
+          if [[ ${AI_GATEWAY_PUBLIC_LIVE_COST_ACK:-} != I_ACCEPT_LIVE_PUBLIC_API_COSTS ]]; then
+            echo 'The exact public-generation acknowledgement is required.' >&2
+            exit 1
+          fi
+          if [[ -v AI_GATEWAY_LIVE_COST_ACK ]]; then
+            echo 'The opposite provider-evaluation acknowledgement must be unset.' >&2
+            exit 1
+          fi
+
+      - name: Run paid public generation contracts
+        run: env -u VERCEL_OIDC_TOKEN -u AI_GATEWAY_LIVE_COST_ACK go test -tags=livecontract ./internal/livecontract -run '^TestGateway(Responses|Chat)Contract$' -count=1
+
+  provider-evaluation:
+    name: Authorized provider evaluation smoke
+    runs-on: ubuntu-latest
+    environment: live-evaluation
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      AI_GATEWAY_LIVE_COST_ACK: I_ACCEPT_LIVE_EVALUATION_COSTS
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned primary Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+          check-latest: false
+          cache: false
+
+      - name: Require isolated provider-evaluation authorization
+        shell: bash
+        run: |
+          if [[ ! ${AI_GATEWAY_API_KEY:-} =~ [^[:space:]] ]]; then
+            echo 'AI_GATEWAY_API_KEY is not configured in the protected live-evaluation environment.' >&2
+            exit 1
+          fi
+          if [[ ${VERCEL_OIDC_TOKEN:-} =~ [^[:space:]] ]]; then
+            echo 'Exactly one credential is required; VERCEL_OIDC_TOKEN must be unset.' >&2
+            exit 1
+          fi
+          if [[ ${AI_GATEWAY_LIVE_COST_ACK:-} != I_ACCEPT_LIVE_EVALUATION_COSTS ]]; then
+            echo 'The exact provider-evaluation acknowledgement is required.' >&2
+            exit 1
+          fi
+          if [[ -v AI_GATEWAY_PUBLIC_LIVE_COST_ACK ]]; then
+            echo 'The opposite public-generation acknowledgement must be unset.' >&2
+            exit 1
+          fi
+
+      - name: Run paid provider evaluation contract
+        run: env -u VERCEL_OIDC_TOKEN -u AI_GATEWAY_PUBLIC_LIVE_COST_ACK go test -tags=livecontract ./internal/livecontract -run '^TestGatewayEvaluationContract$' -count=1
+
+  x-search-options:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.x_search_probe == 'matrix' }}
+    name: Authorized Gateway x_search options evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: live-evaluation
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      AI_GATEWAY_X_SEARCH_LIVE_COST_ACK: I_ACCEPT_LIVE_X_SEARCH_COSTS
+      AI_GATEWAY_X_SEARCH_PROBE_INPUT: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_INPUT }}
+      AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A }}
+      AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B }}
+      AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE }}
+      AI_GATEWAY_X_SEARCH_PROBE_TO_DATE: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_TO_DATE }}
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned primary Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+          check-latest: false
+          cache: false
+
+      - name: Require isolated x_search options authorization
+        shell: bash
+        run: |
+          if [[ ! ${AI_GATEWAY_API_KEY:-} =~ [^[:space:]] ]]; then
+            echo 'AI_GATEWAY_API_KEY is not configured in the protected live-evaluation environment.' >&2
+            exit 1
+          fi
+          if [[ -v VERCEL_OIDC_TOKEN ]]; then
+            echo 'Exactly one credential is required; VERCEL_OIDC_TOKEN must be unset.' >&2
+            exit 1
+          fi
+          if [[ ${AI_GATEWAY_X_SEARCH_LIVE_COST_ACK:-} != I_ACCEPT_LIVE_X_SEARCH_COSTS ]]; then
+            echo 'The exact x_search options acknowledgement is required.' >&2
+            exit 1
+          fi
+          if [[ -v AI_GATEWAY_LIVE_COST_ACK || -v AI_GATEWAY_PUBLIC_LIVE_COST_ACK ]]; then
+            echo 'Both general live acknowledgements must be unset.' >&2
+            exit 1
+          fi
+          for name in \
+            AI_GATEWAY_X_SEARCH_PROBE_INPUT \
+            AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A \
+            AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B \
+            AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE \
+            AI_GATEWAY_X_SEARCH_PROBE_TO_DATE; do
+            if [[ ! ${!name:-} =~ [^[:space:]] ]]; then
+              echo "$name is not configured in the protected live-evaluation environment." >&2
+              exit 1
+            fi
+          done
+
+      - name: Run paid Gateway x_search options evidence contract
+        run: env -u VERCEL_OIDC_TOKEN -u AI_GATEWAY_LIVE_COST_ACK -u AI_GATEWAY_PUBLIC_LIVE_COST_ACK go test -tags=livecontract ./internal/livecontract -run '^TestGatewayXSearchOptionsContract$' -count=1
+
+  x-search-options-interaction:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.x_search_probe == 'interaction' }}
+    name: Authorized Gateway x_search interaction evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: live-evaluation
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      AI_GATEWAY_X_SEARCH_LIVE_COST_ACK: I_ACCEPT_LIVE_X_SEARCH_COSTS
+      AI_GATEWAY_X_SEARCH_PROBE_INPUT: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_INPUT }}
+      AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A }}
+      AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B }}
+      AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE }}
+      AI_GATEWAY_X_SEARCH_PROBE_TO_DATE: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_TO_DATE }}
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned primary Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+          check-latest: false
+          cache: false
+
+      - name: Require isolated x_search interaction authorization
+        shell: bash
+        run: |
+          if [[ ! ${AI_GATEWAY_API_KEY:-} =~ [^[:space:]] ]]; then
+            echo 'AI_GATEWAY_API_KEY is not configured in the protected live-evaluation environment.' >&2
+            exit 1
+          fi
+          if [[ -v VERCEL_OIDC_TOKEN ]]; then
+            echo 'Exactly one credential is required; VERCEL_OIDC_TOKEN must be unset.' >&2
+            exit 1
+          fi
+          if [[ ${AI_GATEWAY_X_SEARCH_LIVE_COST_ACK:-} != I_ACCEPT_LIVE_X_SEARCH_COSTS ]]; then
+            echo 'The exact x_search options acknowledgement is required.' >&2
+            exit 1
+          fi
+          if [[ -v AI_GATEWAY_LIVE_COST_ACK || -v AI_GATEWAY_PUBLIC_LIVE_COST_ACK ]]; then
+            echo 'Both general live acknowledgements must be unset.' >&2
+            exit 1
+          fi
+          for name in \
+            AI_GATEWAY_X_SEARCH_PROBE_INPUT \
+            AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A \
+            AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B \
+            AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE \
+            AI_GATEWAY_X_SEARCH_PROBE_TO_DATE; do
+            if [[ ! ${!name:-} =~ [^[:space:]] ]]; then
+              echo "$name is not configured in the protected live-evaluation environment." >&2
+              exit 1
+            fi
+          done
+
+      - name: Run paid Gateway x_search interaction evidence contract
+        run: env -u VERCEL_OIDC_TOKEN -u AI_GATEWAY_LIVE_COST_ACK -u AI_GATEWAY_PUBLIC_LIVE_COST_ACK go test -tags=livecontract ./internal/livecontract -run '^TestGatewayXSearchOptionsInteractionContract$' -count=1
+
+  x-search-options-excluded-interaction:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.x_search_probe == 'excluded-interaction' }}
+    name: Authorized Gateway x_search excluded interaction evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: live-evaluation
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      AI_GATEWAY_X_SEARCH_LIVE_COST_ACK: I_ACCEPT_LIVE_X_SEARCH_COSTS
+      AI_GATEWAY_X_SEARCH_PROBE_INPUT: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_INPUT }}
+      AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A }}
+      AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B }}
+      AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE }}
+      AI_GATEWAY_X_SEARCH_PROBE_TO_DATE: ${{ secrets.AI_GATEWAY_X_SEARCH_PROBE_TO_DATE }}
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned primary Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+          check-latest: false
+          cache: false
+
+      - name: Require isolated x_search excluded interaction authorization
+        shell: bash
+        run: |
+          if [[ ! ${AI_GATEWAY_API_KEY:-} =~ [^[:space:]] ]]; then
+            echo 'AI_GATEWAY_API_KEY is not configured in the protected live-evaluation environment.' >&2
+            exit 1
+          fi
+          if [[ -v VERCEL_OIDC_TOKEN ]]; then
+            echo 'Exactly one credential is required; VERCEL_OIDC_TOKEN must be unset.' >&2
+            exit 1
+          fi
+          if [[ ${AI_GATEWAY_X_SEARCH_LIVE_COST_ACK:-} != I_ACCEPT_LIVE_X_SEARCH_COSTS ]]; then
+            echo 'The exact x_search options acknowledgement is required.' >&2
+            exit 1
+          fi
+          if [[ -v AI_GATEWAY_LIVE_COST_ACK || -v AI_GATEWAY_PUBLIC_LIVE_COST_ACK ]]; then
+            echo 'Both general live acknowledgements must be unset.' >&2
+            exit 1
+          fi
+          for name in \
+            AI_GATEWAY_X_SEARCH_PROBE_INPUT \
+            AI_GATEWAY_X_SEARCH_PROBE_HANDLE_A \
+            AI_GATEWAY_X_SEARCH_PROBE_HANDLE_B \
+            AI_GATEWAY_X_SEARCH_PROBE_FROM_DATE \
+            AI_GATEWAY_X_SEARCH_PROBE_TO_DATE; do
+            if [[ ! ${!name:-} =~ [^[:space:]] ]]; then
+              echo "$name is not configured in the protected live-evaluation environment." >&2
+              exit 1
+            fi
+          done
+
+      - name: Run paid Gateway x_search excluded interaction evidence contract
+        run: env -u VERCEL_OIDC_TOKEN -u AI_GATEWAY_LIVE_COST_ACK -u AI_GATEWAY_PUBLIC_LIVE_COST_ACK go test -tags=livecontract ./internal/livecontract -run '^TestGatewayXSearchOptionsExcludedInteractionContract$' -count=1

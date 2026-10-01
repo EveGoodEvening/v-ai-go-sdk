@@ -1,0 +1,315 @@
+# Public generation guide
+
+The public generation APIs are experimental historical surfaces. They use the public `/v1` base URL and are separate from provider-protocol [`Evaluate`](evaluation.md), image, speech, buffered transcription, embedding, and reranking endpoints. The full authorized paid generation contract suite remains **NOT RUN / PENDING LIVE RUN**; only the narrow sanitized Responses search-request corroboration recorded in [`x-search.md`](x-search.md#sanitized-structural-evidence) has run, and it does not establish general buffered/streaming generation compatibility.
+
+Examples below are independent snippets inside a function returning `error`, with a configured `client` and live `ctx`. See [client configuration](client.md) for shared authentication, HTTP, retry, error, and privacy behavior. Every live call, including a buffered retry or server-executed search, may perform and bill work; the SDK makes no pricing or billing guarantee.
+
+## Choose a surface
+
+| Need | Use |
+| --- | --- |
+| New public generation; item-based input; public Responses reasoning, cache-control, or tool declarations | Responses: `CreateResponse` / `StreamResponse` |
+| Public Chat Completions compatibility; inline image/file message parts; Gateway routing; request-only server search | Chat: `CreateChatCompletion` / `StreamChatCompletion` |
+
+The request and result types are intentionally separate. There is no generic `Generate` method or automatic conversion between them. Both use the public base URL (`/responses` or `/chat/completions`); `WithBaseURL` configures provider evaluation, image generation, speech synthesis, buffered transcription, embeddings, and reranking, while `WithPublicBaseURL` configures generation. The internal `/v4/ai/language-model` buffered/streaming protocol is not implemented: its multimodal file, reasoning, tool, provider-search, and provider-caching contracts must not be inferred from similarly named public Responses or Chat fields.
+
+## Responses
+
+### Buffered request
+
+```go
+request := gateway.ResponsesRequest{
+    Model: "openai/gpt-5-nano",
+    Input: gateway.ResponseTextInput("Explain Go contexts briefly."),
+}
+
+result, err := client.CreateResponse(ctx, request)
+if err != nil {
+    return err
+}
+fmt.Printf("response_bytes=%d\n", len(result.RawJSON()))
+```
+
+`CreateResponse` sends `stream:false`. `ResponseResult` deliberately exposes only `RawJSON()`, which returns a defensive copy of the complete bounded status-200 JSON object. The SDK does not guess a stable typed Responses result schema; do not log the raw value.
+
+Supported **public Responses request** areas are:
+
+- required `provider/model` model ID and either text or typed item input;
+- sampling/token controls and instructions;
+- function-tool declarations, named/mode tool choice, parallel tool calls, and allowed tools;
+- public Responses reasoning effort/summary and text, JSON-object, or JSON-schema output formats;
+- truncation, previous-response linkage, storage, metadata, and public Gateway cache-control fields.
+
+For exhaustive fields and variants, see [Responses types](../responses.go). Function tools are serialized but never executed by the SDK. Cache controls are request serialization only: `Caching`, when present, is `"auto"`; `CacheTTL` is `"5m"` or `"1h"` and requires `Caching: "auto"`; `CacheAnchorItems` is nonnegative; and `PromptCacheKey` is at most 64 runes. The SDK does not decide whether content is cached, maintain a local cache, report a cache hit, or promise provider acceptance, lifetime, privacy, billing, or relaxed semantics. The opt-in built-in-tools methods additionally support fixed low-context `web_search`, fieldless `x_search`, and the six request-only configurable `x_search` fields; see [Responses server search](#request-only-responses-server-search) and [search support](x-search.md).
+
+### Streaming
+
+```go
+request := gateway.ResponsesRequest{
+    Model: "openai/gpt-5-nano",
+    Input: gateway.ResponseTextInput("Explain Go contexts briefly."),
+}
+
+stream, err := client.StreamResponse(ctx, request)
+if err != nil {
+    return err
+}
+defer stream.Close()
+
+textDeltas, otherEvents := 0, 0
+for stream.Next() {
+    switch stream.Event().(type) {
+    case gateway.ResponseOutputTextDeltaEvent:
+        textDeltas++
+    case gateway.RawResponseEvent:
+        otherEvents++
+    }
+}
+if err := stream.Err(); err != nil {
+    return err
+}
+fmt.Printf("text_delta_events=%d other_events=%d\n", textDeltas, otherEvents)
+```
+
+`StreamResponse` sends `stream:true`. Only `response.output_text.delta` is typed as `ResponseOutputTextDeltaEvent`; every other valid event object is a `RawResponseEvent` with a defensive `RawJSON()` accessor. The stream retains no transcript and starts no producer goroutine.
+
+A clean, completely framed HTTP EOF is successful for Responses; no application terminal event is required. Malformed/truncated framing, invalid event JSON, a missing type discriminator, cancellation, limits, or body read/close failure makes `Err()` non-nil.
+
+## Request-only Responses server search
+
+Responses search is an opt-in **request serialization** surface. Use `ResponsesBuiltInToolsRequest` with `CreateResponseWithBuiltInTools` or `StreamResponseWithBuiltInTools`; the existing `ResponsesRequest`, `CreateResponse`, and `StreamResponse` contracts are unchanged. Gateway/provider infrastructure executes the declared search tools server-side. The Go SDK neither executes tools nor turns search calls, results, sources, or lifecycle events into typed values.
+
+The supported declarations are:
+
+- `ResponseWebSearchTool{}` emits `{"type":"web_search","search_context_size":"low"}`. Omitting `search_context_size`, choosing another size, and using `web_search_preview` or another current/preview form are unsupported.
+- Fieldless `ResponseXSearchTool{}` emits exactly `{"type":"x_search"}` and remains available unchanged.
+- `ResponseXSearchOptionsTool` serializes `x_search` with any present `AllowedXHandles`, `ExcludedXHandles`, `FromDate`, `ToDate`, `EnableImageUnderstanding`, and `EnableVideoUnderstanding` request fields.
+
+For configurable X search, nil slices and pointers omit their wire members. Non-nil empty handle slices emit `[]`; non-nil booleans emit explicit `false` or `true`; non-nil date strings, including empty strings, are forwarded subject only to generic string-size bounds. No option emits `null`. These are SDK serialization rules, not evidence that the Gateway accepts every representable subset or value combination. The only option-specific local validation is rejection, before credentials or network access, when both handle lists are non-empty. The SDK does not impose a 10/20-item provider limit, validate handle syntax or duplicates, or define date grammar, ordering, inclusivity, empty-date meaning, or semantic efficacy.
+
+Gateway acceptance is evidenced only for the six exact singleton forms; the exact neutral four-field form with both handle lists empty and both understanding flags explicitly `false`; and the exact allowed-handle and excluded-handle maximal five-field forms, each with one non-empty handle list, both dates, and both understanding flags `true`. Arbitrary subsets and other combinations remain unresolved even though the SDK serializes them.
+
+Ordinary function tools remain in `ResponsesRequest.Tools` and may coexist with built-in tools. The encoder emits function tools first, then built-in tools in caller order.
+
+### Buffered search request
+
+```go
+imageUnderstanding := true
+
+request := gateway.ResponsesBuiltInToolsRequest{
+    Request: gateway.ResponsesRequest{
+        Model: "spacexai/grok-4.6",
+        Input: gateway.ResponseTextInput("Find public information about an example topic."),
+    },
+    Tools: []gateway.ResponseBuiltInTool{
+        gateway.ResponseXSearchOptionsTool{
+            EnableImageUnderstanding: &imageUnderstanding,
+        },
+    },
+}
+
+result, err := client.CreateResponseWithBuiltInTools(ctx, request)
+if err != nil {
+    return err
+}
+fmt.Printf("response_bytes=%d\n", len(result.RawJSON()))
+```
+
+This singleton-shape example uses an illustrative boolean value and prints only a structural byte count, not raw output or generated prose. It matches a cleared request shape but does not reproduce or disclose private evidence inputs. `ResponseResult.RawJSON()` remains the complete buffered search-output boundary and is not sanitized. For fieldless X search, use `gateway.ResponseXSearchTool{}` instead. For fixed low-context web search, use `gateway.ResponseWebSearchTool{}` with the evidenced `openai/gpt-5.4-mini` route.
+
+### Streaming search request
+
+```go
+fromDate := "2099-01-01" // Illustrative only; not an evidence value or validated grammar.
+toDate := "2099-01-31"   // Illustrative only; not an evidence value or validated grammar.
+imageUnderstanding := true
+videoUnderstanding := true
+
+request := gateway.ResponsesBuiltInToolsRequest{
+    Request: gateway.ResponsesRequest{
+        Model: "spacexai/grok-4.6",
+        Input: gateway.ResponseTextInput("Find public information about another example topic."),
+    },
+    Tools: []gateway.ResponseBuiltInTool{
+        gateway.ResponseXSearchOptionsTool{
+            ExcludedXHandles:         []string{"example-muted-account"}, // Illustrative only.
+            FromDate:                 &fromDate,
+            ToDate:                   &toDate,
+            EnableImageUnderstanding: &imageUnderstanding,
+            EnableVideoUnderstanding: &videoUnderstanding,
+        },
+    },
+}
+
+stream, err := client.StreamResponseWithBuiltInTools(ctx, request)
+if err != nil {
+    return err
+}
+defer stream.Close()
+
+textDeltas, rawEvents := 0, 0
+for stream.Next() {
+    switch stream.Event().(type) {
+    case gateway.ResponseOutputTextDeltaEvent:
+        textDeltas++
+    case gateway.RawResponseEvent:
+        rawEvents++
+    }
+}
+if err := stream.Err(); err != nil {
+    return err
+}
+fmt.Printf("text_delta_events=%d raw_events=%d\n", textDeltas, rawEvents)
+```
+
+This example uses the exact excluded maximal five-field shape, with illustrative values distinct from the private evidence inputs. The same streaming method also accepts fieldless `ResponseXSearchTool{}` and fixed low-context `ResponseWebSearchTool{}`. Only text deltas are typed; search-call and all other valid event objects fall back to `RawResponseEvent`. No search-specific event names, ordering, status, completion, error, citation, or terminal semantics are promised.
+
+Model compatibility is evidence-bounded:
+
+| Declaration | Exact evidenced route | Supported boundary |
+| --- | --- | --- |
+| fixed low-context `web_search` | `openai/gpt-5.4-mini` | Documented request fields and raw/typed fallback boundary |
+| fieldless `x_search` | `spacexai/grok-4.6` | Exact request declaration and raw/typed fallback boundary |
+| configurable `x_search` | `spacexai/grok-4.6` | Request acceptance only for six exact singletons, the exact neutral four-field form, and exact allowed/excluded maximal five-field forms; SDK presence serialization is broader, while option semantics and arbitrary subsets remain unresolved |
+
+The Gateway catalog is dynamic. These rows do not promise universal OpenAI, SpaceXAI, or cross-provider support; the SDK has no model allowlist, automatic fallback, or routing compatibility guarantee, so unsupported model/tool combinations may fail server-side. Search-specific tool choice and `allowed_tools`, wider-model behavior, option semantics, arbitrary subsets and other untested combinations, canonical all-six acceptance, wrong-kind server behavior, and all typed search calls/results/actions/posts/sources/citations/annotations/refusals/provider errors/usage/cost remain blocked. This surface is not a direct-xAI client and imports no direct-xAI limits, defaults, validation, output, authentication, or compatibility contract.
+
+## Chat Completions
+
+### Buffered request
+
+```go
+request := gateway.ChatCompletionRequest{
+    Model: "openai/gpt-5-nano",
+    Messages: []gateway.ChatMessage{
+        {Role: "user", Content: gateway.ChatTextContent("Explain Go contexts briefly.")},
+    },
+}
+
+result, err := client.CreateChatCompletion(ctx, request)
+if err != nil {
+    return err
+}
+choicesPresent := result.Choices.Present && !result.Choices.Null
+fmt.Printf("choices_present=%t\n", choicesPresent)
+```
+
+`CreateChatCompletion` sends `stream:false`. Chat has typed, presence-preserving fields plus `RawJSON()` for the complete bounded object. Unknown response members remain only in raw JSON.
+
+`JSONField[T]` distinguishes all wire states:
+
+| JSON state | `Present` | `Null` | `Value` |
+| --- | ---: | ---: | --- |
+| member absent | `false` | `false` | zero value |
+| member present as `null` | `true` | `true` | zero value |
+| member present with a value | `true` | `false` | decoded value |
+
+Always test `Present` and `Null` before using `Value`; for example, assistant `content:null` is different from absent content and from `content:""`.
+
+Supported request areas are:
+
+- required model and typed `system`, `developer`, `user`, or `assistant` messages;
+- text content or text/image-URL/inline-file parts;
+- sampling, token, stop, penalty, and safety controls;
+- ordinary function tools and tool choice;
+- text, JSON, JSON-schema, and legacy JSON response formats;
+- fallback models and Gateway provider routing/timeouts.
+
+See [Chat request, message, tool, format, and result types](../chat.go) for the complete field inventory.
+
+### Streaming
+
+```go
+request := gateway.ChatCompletionRequest{
+    Model: "openai/gpt-5-nano",
+    Messages: []gateway.ChatMessage{
+        {Role: "user", Content: gateway.ChatTextContent("Explain Go contexts briefly.")},
+    },
+}
+
+stream, err := client.StreamChatCompletion(ctx, request)
+if err != nil {
+    return err
+}
+defer stream.Close()
+
+chunks, choices := 0, 0
+for stream.Next() {
+    chunks++
+    choices += len(stream.Event().Choices)
+}
+if err := stream.Err(); err != nil {
+    return err
+}
+fmt.Printf("chunks=%d choices=%d\n", chunks, choices)
+```
+
+Each event is a validated `chat.completion.chunk`. Typed data is limited to ordered choices and their text delta; `RawJSON()` retains the rest. Unknown raw members are retained evidence, not a typed-support promise. Chat requires the exact `data: [DONE]` marker for successful termination. EOF before `[DONE]` is an error.
+
+Both stream types accept at most 10,000 events. An explicit `Close()` ends reading; it does not prove the server completed generation. Streams are never resumed or replayed. Buffered generation may use an explicitly configured retry policy, and each attempt may duplicate billable work. Provider image, speech, buffered transcription, embedding, and reranking methods remain separate exact-one-attempt calls. See [stream ownership and cancellation](client.md#cancellation-and-streams).
+
+## Request-only Chat server search
+
+Gateway Chat server search is a separate opt-in **request serialization** extension. It does not type search results, lifecycle events, citations, offsets, costs, refusals, or provider errors. Server execution remains behind the ordinary typed/raw Chat result boundary. It does not imply support for Responses search forms beyond the exact fixed declarations documented above, public `/v1/evaluate`, or any direct-xAI client.
+
+The four concrete wire declarations are:
+
+- `ChatExaSearchTool{Config: ...}` → `type: "vercel:exa_search"`
+- `ChatParallelSearchTool{Config: ...}` → `type: "vercel:parallel_search"`
+- `ChatPerplexitySearchTool{Config: ...}` → `type: "vercel:perplexity_search"`
+- `ChatTakoSearchTool{Config: ...}` → `type: "vercel:tako_search"`
+
+Use the explicit wrapper and methods; the existing `ChatCompletionRequest`, `CreateChatCompletion`, and `StreamChatCompletion` signatures are unchanged:
+
+```go
+request := gateway.ChatServerToolsRequest{
+    Request: gateway.ChatCompletionRequest{
+        Model: "openai/gpt-5-nano",
+        Messages: []gateway.ChatMessage{
+            {Role: "user", Content: gateway.ChatTextContent("Summarize current Go news.")},
+        },
+        ToolChoice: gateway.ChatToolChoiceRequired,
+    },
+    ServerTools: []gateway.ChatServerTool{
+        gateway.ChatExaSearchTool{Config: gateway.ChatExaSearchConfig{Query: "Go language news"}},
+    },
+}
+
+result, err := client.CreateChatCompletionWithServerTools(ctx, request)
+if err != nil {
+    return err
+}
+fmt.Printf("choices_present=%t\n", result.Choices.Present && !result.Choices.Null)
+```
+
+For streaming, call `StreamChatCompletionWithServerTools(ctx, request)` and use the same `Next` / `Event` / `Err` / `Close` lifecycle shown above. Both methods still target `/v1/chat/completions`.
+
+Ordinary function tools are emitted first, then server tools, preserving caller order and duplicate server declarations. See [config types and enums](../chat.go), [validation](../chat_validate.go), and [encoding](../chat_wire.go) for the full contract. Required queries/objectives must be nonempty; Tako `Strict: true` requires present, nonempty `NodeIDs`.
+
+Presence rules are intentional:
+
+- optional scalar pointers: nil omits the member; non-nil emits the value, including zero or `false`;
+- optional slice pointers: nil pointer omits; pointer-to-nil and pointer-to-empty both emit `[]`, never `null`;
+- optional union members: nil interface omits; supported variants emit their scalar, object, or array shape;
+- `ChatExaContents.SubpageTarget`: `ChatExaSubpageTargetStrings(nil)` and a non-nil pointer to a nil slice emit `[]`; a typed-nil pointer is rejected before credentials or network work; array order is preserved;
+- present nested config pointers emit an object even when all their optional members are omitted.
+
+Ordinary functions may coexist with server tools, subject to name rules. If a server tool is present, an ordinary function with its short identifier (`exa_search`, `parallel_search`, `perplexity_search`, or `tako_search`) is a collision. `ChatSpecificToolChoice` may select neither that short identifier nor its `vercel:...` form. A different function name is allowed; `ChatToolChoiceAuto`, `ChatToolChoiceRequired`, and `ChatToolChoiceNone` remain available. When the matching server tool is absent, the short ordinary-function name and matching specific choice are valid.
+
+## Limits, files, and raw-data boundary
+
+Requests are validated before credential or network work. Shared resource policy caps JSON nesting at 64, individual string/byte values and buffered bodies/events at 1 MiB, and arrays/objects/request collections/stream events at 10,000 where applicable. Responses metadata is capped at 16 entries. SSE lines are capped at 64 KiB.
+
+Inline Chat file parts and image/media request values are request data, not a Gateway file service. This SDK does not upload, list, retrieve, persist, or delete files, and it does not fetch image URLs. Video generation, WebSocket generation, streaming transcription, and realtime APIs are not implemented.
+
+Raw result and event accessors, provider metadata, diagnostic bodies, and retained media return bounded defensive copies where documented, not sanitized or zeroized data. They may contain prompts, inline files and media, generated text, decoded image outputs, opaque audio/transcription content, tool arguments/results, search configuration/output, cache keys, identifiers, usage, routing details, or provider extensions. These values remain in ordinary caller/process memory until released; prefer typed presence flags and structural counts in diagnostics, and do not print, log, or persist raw values without an explicit privacy decision.
+
+## Runnable example
+
+With credentials already set, [examples/generate](../examples/generate/main.go) can run any of the four text paths:
+
+```sh
+go run ./examples/generate -surface responses -mode buffered -model openai/gpt-5-nano
+```
+
+Choose `responses` or `chat` and `buffered` or `stream`. Each invocation sends a real, potentially billable request and prints only structural summaries.
